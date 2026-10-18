@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .rbxlx
 .rbxl
+
+.venv-ts/
