@@ -1,7 +1,12 @@
 -- MazeGenerator (ModuleScript, Server)
 -- Generates a solvable Backrooms-style maze using recursive backtracking
 -- plus opens up some rooms/corridors for that repetitive office feel.
+-- Upgrades:
+--   * themed rooms (library / CS lab / lecture hall / professor office)
+--   * lore posters about دانشگاه علوم و تحقیقات embedded in the walls
+--   * staggered, moodier ceiling lighting with occasional red horror lights
 local Config = require(game.ReplicatedStorage.Shared.GameConfig)
+local LoreData = require(game.ReplicatedStorage.Shared.LoreData)
 local MazeGenerator = {}
 
 -- Directions: 1=North,2=East,3=South,4=West
@@ -98,11 +103,216 @@ local function addRooms(grid, w, h)
 	end
 end
 
+-- ========== DECOR HELPERS ==========
+local function makeProp(propsFolder, name, size, color, material, cframe, canCollide)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = size
+	p.Color = color
+	p.Material = material
+	p.Anchored = true
+	p.CanCollide = canCollide ~= false
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.CFrame = cframe
+	p.Parent = propsFolder
+	return p
+end
+
+-- Group adjacent isRoom cells into clusters (flood fill over room cells).
+local function clusterRooms(grid, w, h)
+	local clusters = {}
+	local seen = {}
+	for y = 1, h do
+		seen[y] = {}
+		for x = 1, w do seen[y][x] = false end
+	end
+	for y = 1, h do
+		for x = 1, w do
+			if grid[y][x].isRoom and not seen[y][x] then
+				local cluster = {}
+				local queue = {{x = x, y = y}}
+				seen[y][x] = true
+				while #queue > 0 do
+					local cur = table.remove(queue, 1)
+					table.insert(cluster, cur)
+					for i = 1, 4 do
+						local d = DIRS[i]
+						local nx, ny = cur.x + d.dx, cur.y + d.dy
+						if nx >= 1 and nx <= w and ny >= 1 and ny <= h
+							and grid[ny][nx].isRoom and not seen[ny][nx] then
+							seen[ny][nx] = true
+							table.insert(queue, {x = nx, y = ny})
+						end
+					end
+				end
+				table.insert(clusters, cluster)
+			end
+		end
+	end
+	return clusters
+end
+
+local THEME_NAMES = {"LIBRARY", "CS_LAB", "LECTURE", "OFFICE"}
+
+local WOOD = Color3.fromRGB(110, 78, 50)
+local PAPER = Color3.fromRGB(235, 232, 220)
+local METAL = Color3.fromRGB(120, 122, 130)
+local DARKSCREEN = Color3.fromRGB(30, 34, 44)
+local MONITOR_GLOW = Color3.fromRGB(90, 180, 255)
+local SEAT = Color3.fromRGB(70, 60, 90)
+
+-- Decorate one themed cell (pos = cell center at floor level).
+local function decorateCell(propsFolder, theme, pos, ox, oy, oz)
+	local r = math.random(0, 3)
+	if theme == "LIBRARY" then
+		-- Bookshelves along two edges
+		for i = 0, 1 do
+			local shelf = makeProp(propsFolder, "Bookshelf",
+				Vector3.new(1.2, 5, 6), WOOD, Enum.Material.WoodPlanks,
+				CFrame.new(pos.X + (i == 0 and -6 or 6), oy + 2.5, pos.Z))
+			-- Books: thin colorful slabs on the shelf front
+			for b = 1, 3 do
+				makeProp(propsFolder, "Books",
+					Vector3.new(0.3, 0.8, 5.4),
+					Color3.fromRGB(80 + b * 40, 60 + r * 25, 60 + b * 30),
+					Enum.Material.Fabric,
+					CFrame.new(shelf.Position.X + (i == 0 and 0.7 or -0.7), oy + 1 + b * 1.3, pos.Z),
+					false)
+			end
+		end
+	elseif theme == "CS_LAB" then
+		-- Rows of desks with glowing monitors (the computer science lab!)
+		for i = 0, 1 do
+			local dz = (i == 0) and -5 or 5
+			local desk = makeProp(propsFolder, "Desk",
+				Vector3.new(5, 2.4, 1.8), PAPER, Enum.Material.SmoothPlastic,
+				CFrame.new(pos.X, oy + 1.2, pos.Z + dz))
+			local monitor = makeProp(propsFolder, "Monitor",
+				Vector3.new(2.2, 1.4, 0.25), DARKSCREEN, Enum.Material.SmoothPlastic,
+				CFrame.new(pos.X, oy + 3.1, pos.Z + dz + (i == 0 and 0.6 or -0.6)), false)
+			local glow = Instance.new("SurfaceGui")
+			glow.Face = i == 0 and Enum.NormalId.Back or Enum.NormalId.Front
+			glow.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+			glow.PixelsPerStud = 20
+			glow.LightInfluence = 0
+			glow.Parent = monitor
+			local codeLabel = Instance.new("TextLabel")
+			codeLabel.Size = UDim2.fromScale(1, 1)
+			codeLabel.BackgroundColor3 = Color3.fromRGB(10, 12, 20)
+			codeLabel.BackgroundTransparency = 0.2
+			codeLabel.TextColor3 = MONITOR_GLOW
+			codeLabel.Font = Enum.Font.Code
+			codeLabel.TextScaled = true
+			codeLabel.Text = "int main() {\n  run();\n}"
+			codeLabel.Parent = glow
+		end
+	elseif theme == "LECTURE" then
+		-- Whiteboard on one edge + rows of seats
+		local board = makeProp(propsFolder, "Whiteboard",
+			Vector3.new(6, 3.5, 0.3), PAPER, Enum.Material.SmoothPlastic,
+			CFrame.new(pos.X, oy + 3.5, pos.Z - 6.5))
+		local bg = Instance.new("SurfaceGui")
+		bg.Face = Enum.NormalId.Front
+		bg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		bg.PixelsPerStud = 20
+		bg.Parent = board
+		local txt = Instance.new("TextLabel")
+		txt.Size = UDim2.fromScale(1, 1)
+		txt.BackgroundTransparency = 1
+		txt.Text = "الگوریتم‌ها — حل تمرین\nBFS برای فرار از هزارتو"
+		txt.TextColor3 = Color3.fromRGB(30, 30, 60)
+		txt.Font = Enum.Font.SourceSansBold
+		txt.TextScaled = true
+		txt.Parent = bg
+		-- Seats in rows
+		for row = 0, 1 do
+			for col = -1, 1 do
+				makeProp(propsFolder, "Seat",
+					Vector3.new(1.6, 1.4, 1.6), SEAT, Enum.Material.Fabric,
+					CFrame.new(pos.X + col * 2.2, oy + 0.7, pos.Z + 1.5 + row * 2.2))
+			end
+		end
+	else -- OFFICE (professor's office)
+		local desk = makeProp(propsFolder, "ProfDesk",
+			Vector3.new(6, 2.6, 2.4), WOOD, Enum.Material.WoodPlanks,
+			CFrame.new(pos.X, oy + 1.3, pos.Z - 5))
+		makeProp(propsFolder, "Cabinet",
+			Vector3.new(2, 4.5, 1.6), METAL, Enum.Material.Metal,
+			CFrame.new(pos.X - 6, oy + 2.25, pos.Z))
+		-- Old CRT on the desk
+		local crt = makeProp(propsFolder, "CRT",
+			Vector3.new(1.8, 1.6, 1.6), Color3.fromRGB(180, 175, 160), Enum.Material.SmoothPlastic,
+			CFrame.new(pos.X + 1.5, oy + 3.4, pos.Z - 5), false)
+		local sgl = Instance.new("SurfaceGui")
+		sgl.Face = Enum.NormalId.Front
+		sgl.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		sgl.PixelsPerStud = 20
+		sgl.Parent = crt
+		local l = Instance.new("TextLabel")
+		l.Size = UDim2.fromScale(1, 1)
+		l.BackgroundColor3 = Color3.fromRGB(8, 10, 8)
+		l.Text = "> grade = nil\n> escape()"
+		l.TextColor3 = Color3.fromRGB(120, 255, 120)
+		l.Font = Enum.Font.Code
+		l.TextScaled = true
+		l.Parent = sgl
+	end
+end
+
+-- Embed a lore poster into a random wall part (visible from both sides).
+local function placePoster(wallParts, posterData, model)
+	if #wallParts == 0 then return end
+	local wall = wallParts[math.random(1, #wallParts)]
+	local alongX = wall.Size.X > wall.Size.Z
+	local panel = Instance.new("Part")
+	panel.Name = "LorePoster"
+	panel.Anchored = true
+	panel.CanCollide = false
+	panel.Material = Enum.Material.SmoothPlastic
+	panel.Color = Color3.fromRGB(245, 242, 230)
+	if alongX then
+		panel.Size = Vector3.new(4.2, 2.6, Config.WallThickness + 0.3)
+	else
+		panel.Size = Vector3.new(Config.WallThickness + 0.3, 2.6, 4.2)
+	end
+	panel.CFrame = wall.CFrame
+	panel.Parent = model
+
+	for _, face in ipairs({Enum.NormalId.Front, Enum.NormalId.Back}) do
+		local sg = Instance.new("SurfaceGui")
+		sg.Face = face
+		sg.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+		sg.PixelsPerStud = 24
+		sg.LightInfluence = 0.3
+		sg.Parent = panel
+		local titleLabel = Instance.new("TextLabel")
+		titleLabel.Size = UDim2.new(1, -8, 0.32, 0)
+		titleLabel.Position = UDim2.new(0, 4, 0, 4)
+		titleLabel.BackgroundTransparency = 1
+		titleLabel.Text = posterData.title
+		titleLabel.TextColor3 = Color3.fromRGB(120, 40, 30)
+		titleLabel.Font = Enum.Font.SourceSansBold
+		titleLabel.TextScaled = true
+		titleLabel.Parent = sg
+		local bodyLabel = Instance.new("TextLabel")
+		bodyLabel.Size = UDim2.new(1, -8, 0.6, 0)
+		bodyLabel.Position = UDim2.new(0, 4, 0.34, 0)
+		bodyLabel.BackgroundTransparency = 1
+		bodyLabel.Text = posterData.body
+		bodyLabel.TextColor3 = Color3.fromRGB(40, 40, 45)
+		bodyLabel.Font = Enum.Font.SourceSans
+		bodyLabel.TextWrapped = true
+		bodyLabel.TextScaled = true
+		bodyLabel.Parent = sg
+	end
+end
+
 -- Build physical Part instances into a parent model.
 -- Returns:
---   model (with Floor, Walls, Lights, Ceiling, SpawnPoints)
---   spawnPoints: list of Vector3 positions (center of cells)
---   exitCandidateCells: list of {x,y,pos} cells that are open, far from spawn
+--   model (with Floor, Walls, Lights, Ceiling, Props, SpawnPoints)
+--   openCells: list of {x, y, pos} cells
+--   wallParts: list of long wall Parts (used for poster placement)
 local function buildMazeModel(grid, w, h, parent)
 	local cell = Config.CellSize
 	local wallH = Config.WallHeight
@@ -110,7 +320,6 @@ local function buildMazeModel(grid, w, h, parent)
 	local center = Config.MazeCenterOffset
 
 	-- Origin of the maze in world space (lower-left corner of grid)
-	-- Center the maze around (center.x, center.z)
 	local ox = center.x - (w * cell) / 2
 	local oy = Config.FloorY
 	local oz = center.z - (h * cell) / 2
@@ -125,6 +334,10 @@ local function buildMazeModel(grid, w, h, parent)
 	local lightFolder = Instance.new("Folder")
 	lightFolder.Name = "Lights"
 	lightFolder.Parent = model
+
+	local propsFolder = Instance.new("Folder")
+	propsFolder.Name = "Props"
+	propsFolder.Parent = model
 
 	-- Floor
 	local floor = Instance.new("Part")
@@ -153,6 +366,7 @@ local function buildMazeModel(grid, w, h, parent)
 	ceiling.Parent = model
 
 	-- Material for walls
+	local wallParts = {}
 	local function makeWall(size, cframe)
 		local p = Instance.new("Part")
 		p.Size = size
@@ -164,6 +378,9 @@ local function buildMazeModel(grid, w, h, parent)
 		p.TopSurface = Enum.SurfaceType.Smooth
 		p.BottomSurface = Enum.SurfaceType.Smooth
 		p.Parent = wallFolder
+		if size.X > half or size.Z > half then
+			table.insert(wallParts, p)
+		end
 		return p
 	end
 
@@ -212,33 +429,41 @@ local function buildMazeModel(grid, w, h, parent)
 		)
 	end
 
-	-- Fluorescent lights: one per cell, on the ceiling, flickering occasionally
+	-- Fluorescent lights: staggered (every other cell, checkerboard) so there
+	-- are pools of darkness between them — creepier and much lighter to render.
+	-- ~10% of lights are dim red "horror" lights.
 	for gy = 1, h do
 		for gx = 1, w do
-			local worldX = ox + (gx - 1) * cell + half
-			local worldZ = oz + (gy - 1) * cell + half
+			if (gx + gy) % 2 == 1 then
+				local worldX = ox + (gx - 1) * cell + half
+				local worldZ = oz + (gy - 1) * cell + half
 
-			local lightPart = Instance.new("Part")
-			lightPart.Name = "Fluorescent"
-			lightPart.Size = Vector3.new(8, 0.3, 1.5)
-			lightPart.Anchored = true
-			lightPart.CanCollide = false
-			lightPart.Material = Enum.Material.Neon
-			lightPart.Color = Color3.fromRGB(255, 250, 220)
-			lightPart.Position = Vector3.new(worldX, oy + wallH + 0.3, worldZ)
-			lightPart.Parent = lightFolder
+				local horror = math.random() < 0.10
+				local lightColor = horror and Color3.fromRGB(255, 90, 80)
+					or Color3.fromRGB(255, 250, 220)
 
-			local pl = Instance.new("PointLight")
-			pl.Brightness = 1.2
-			pl.Range = 18
-			pl.Color = Color3.fromRGB(255, 250, 220)
-			pl.Parent = lightPart
+				local lightPart = Instance.new("Part")
+				lightPart.Name = horror and "FluorescentHorror" or "Fluorescent"
+				lightPart.Size = Vector3.new(8, 0.3, 1.5)
+				lightPart.Anchored = true
+				lightPart.CanCollide = false
+				lightPart.Material = Enum.Material.Neon
+				lightPart.Color = lightColor
+				lightPart.Position = Vector3.new(worldX, oy + wallH + 0.3, worldZ)
+				lightPart.Parent = lightFolder
+
+				local pl = Instance.new("PointLight")
+				pl.Brightness = horror and 0.8 or 1.2
+				pl.Range = horror and 14 or 20
+				pl.Color = lightColor
+				pl.Parent = lightPart
+			end
 		end
 	end
 
 	model.Parent = parent
 
-	-- Build list of open cells (centers) for spawn/exit placement
+	-- Build list of open cells (centers) for spawn/exit/item placement
 	local openCells = {}
 	for gy = 1, h do
 		for gx = 1, w do
@@ -251,12 +476,10 @@ local function buildMazeModel(grid, w, h, parent)
 		end
 	end
 
-	return model, openCells, ox, oy, oz
+	return model, openCells, ox, oy, oz, wallParts, propsFolder
 end
 
 -- BFS from a start cell, returning a 2D array of distances (nil = unreachable).
--- Used to pick exit (farthest cell from spawn) and professor spawn (farthest
--- cell from spawn that isn't the exit or player start).
 local function bfsAllDistances(grid, w, h, sx, sy)
 	local dist = {}
 	for y = 1, h do
@@ -282,17 +505,8 @@ local function bfsAllDistances(grid, w, h, sx, sy)
 	return dist
 end
 
--- BFS to find shortest path length between two cells (convenience for verifying
--- solvability; used mainly during testing).
-local function bfsDistance(grid, w, h, sx, sy, tx, ty)
-	if sx == tx and sy == ty then return 0 end
-	local dist = bfsAllDistances(grid, w, h, sx, sy)
-	return dist[ty][tx]
-end
-
 -- Generate a fresh maze and build it in Workspace.ActiveMap.
--- Returns:
---   model, spawnCandidates (list of Vector3), exitPos (Vector3)
+-- Returns a data table (see bottom of function).
 function MazeGenerator.Generate(parent)
 	local w = Config.MazeWidth
 	local h = Config.MazeHeight
@@ -306,7 +520,37 @@ function MazeGenerator.Generate(parent)
 	carveMaze(grid, w, h)
 	addRooms(grid, w, h)
 
-	local model, openCells, ox, oy, oz = buildMazeModel(grid, w, h, parent)
+	local model, openCells, ox, oy, oz, wallParts, propsFolder =
+		buildMazeModel(grid, w, h, parent)
+
+	-- === Themed rooms: cluster room cells and decorate some of them ===
+	local clusters = clusterRooms(grid, w, h)
+	local themeIdx = 0
+	for _, cluster in ipairs(clusters) do
+		if #cluster >= 2 and math.random() < Config.RoomThemeChance then
+			themeIdx = themeIdx + 1
+			local theme = THEME_NAMES[(themeIdx - 1) % #THEME_NAMES + 1]
+			-- Decorate up to 3 cells of the cluster
+			for i = 1, math.min(3, #cluster) do
+				local c = cluster[i]
+				local worldX = ox + (c.x - 1) * Config.CellSize + Config.CellSize / 2
+				local worldZ = oz + (c.y - 1) * Config.CellSize + Config.CellSize / 2
+				decorateCell(propsFolder, theme, Vector3.new(worldX, oy, worldZ), ox, oy, oz)
+			end
+		end
+	end
+
+	-- === Lore posters about دانشگاه علوم و تحقیقات / علوم کامپیوتر ===
+	local posterPool = {}
+	for _, p in ipairs(LoreData.Posters) do
+		table.insert(posterPool, p)
+	end
+	local placedPosters = 0
+	while #posterPool > 0 and placedPosters < Config.PosterCount do
+		local idx = math.random(1, #posterPool)
+		placePoster(wallParts, table.remove(posterPool, idx), model)
+		placedPosters = placedPosters + 1
+	end
 
 	-- Pick a spawn cell near the center for players' initial drop point
 	local spawnGridX = math.floor(w / 2) + math.random(-2, 2)
@@ -332,7 +576,6 @@ function MazeGenerator.Generate(parent)
 
 	-- Spawn candidates: a cluster of open cells near spawn for multiple players
 	local spawnCandidates = {}
-	-- First the main spawn cell
 	local function cellWorld(gx, gy)
 		local worldX = ox + (gx - 1) * Config.CellSize + Config.CellSize / 2
 		local worldZ = oz + (gy - 1) * Config.CellSize + Config.CellSize / 2
@@ -383,6 +626,7 @@ function MazeGenerator.Generate(parent)
 		ProfessorSpawn = cellWorld(profGX, profGY),
 		-- Exit is at floor level (Y=oy). The exit pad is built at Y=0.5 on top of the floor.
 		ExitPos = cellWorld(exitGX, exitGY),
+		OpenCells = openCells,
 		Grid = grid,
 		Width = w,
 		Height = h,

@@ -1,27 +1,45 @@
 -- AmbientEffects (LocalScript)
--- Adds client-side atmosphere: distant fluorescent hum, subtle flicker,
--- and heartbeat/chase music when the professor is nearby.
+-- Client-side atmosphere: background music, lobby music, proximity-driven
+-- chase music + heartbeat when the professor is near, and light flicker.
+-- All SoundIds come from Config.MusicIds — fill them in to hear music.
 local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local SoundService = game:GetService("SoundService")
 
 local localPlayer = Players.LocalPlayer
+local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("GameConfig"))
 
--- === Ambient hum (placed in SoundService so it follows the listener) ===
-local hum = SoundService:FindFirstChild("FluorescentHum")
-if not hum then
-	hum = Instance.new("Sound")
-	hum.Name = "FluorescentHum"
-	hum.Looped = true
-	hum.Volume = 0.15
-	-- Placeholder empty sound. Replace SoundId with an asset id for polish.
-	hum.SoundId = ""
-	hum.Parent = SoundService
-end
-hum:Play()
+local MusicIds = Config.MusicIds or {}
+local MusicVolumes = Config.MusicVolumes or {}
 
--- === Proximity heartbeat when professor is near ===
+-- === Background music (plays the whole round) ===
+local background = Instance.new("Sound")
+background.Name = "BackgroundMusic"
+background.Looped = true
+background.Volume = MusicVolumes.Background or 0.25
+background.SoundId = MusicIds.Background or ""
+background.Parent = SoundService
+background:Play()
+
+-- === Lobby music (between rounds) ===
+local lobbyMusic = Instance.new("Sound")
+lobbyMusic.Name = "LobbyMusic"
+lobbyMusic.Looped = true
+lobbyMusic.Volume = MusicVolumes.Lobby or 0.3
+lobbyMusic.SoundId = MusicIds.Lobby or ""
+lobbyMusic.Parent = SoundService
+
+-- === Chase music (gets loud when the professor hunts you) ===
+local chaseMusic = Instance.new("Sound")
+chaseMusic.Name = "ChaseMusic"
+chaseMusic.Looped = true
+chaseMusic.Volume = 0
+chaseMusic.SoundId = MusicIds.Chase or ""
+chaseMusic.Parent = SoundService
+
+-- === Proximity heartbeat ===
 local heartbeat = Instance.new("Sound")
 heartbeat.Name = "Heartbeat"
 heartbeat.Looped = true
@@ -29,6 +47,30 @@ heartbeat.Volume = 0
 heartbeat.SoundId = ""
 heartbeat.Parent = SoundService
 heartbeat:Play()
+
+-- Lobby vs maze music swapping
+local inMaze = false
+local lastStateCheck = 0
+RunService.Heartbeat:Connect(function()
+	local now = tick()
+	if now - lastStateCheck < 1 then return end
+	lastStateCheck = now
+
+	local char = localPlayer.Character
+	local nowInMaze = char ~= nil and char:GetAttribute("InMaze") == true
+	if nowInMaze ~= inMaze then
+		inMaze = nowInMaze
+		if inMaze then
+			lobbyMusic:Stop()
+			background:Play()
+		else
+			background:Stop()
+			chaseMusic.Volume = 0
+			chaseMusic:Stop()
+			lobbyMusic:Play()
+		end
+	end
+end)
 
 -- Track nearest professor distance every 0.25 seconds
 local lastCheck = 0
@@ -39,8 +81,16 @@ RunService.Heartbeat:Connect(function(dt)
 
 	local char = localPlayer.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then heartbeat.Volume = 0 return end
-	if char:GetAttribute("Spectating") then heartbeat.Volume = 0 return end
+	if not root then
+		heartbeat.Volume = 0
+		chaseMusic.Volume = 0
+		return
+	end
+	if char:GetAttribute("Spectating") or not inMaze then
+		heartbeat.Volume = 0
+		chaseMusic.Volume = 0
+		return
+	end
 
 	local profs = Workspace:FindFirstChild("Professors")
 	local minDist = math.huge
@@ -53,17 +103,25 @@ RunService.Heartbeat:Connect(function(dt)
 			end
 		end
 	end
-	if minDist < 40 then
-		-- Ramp up heartbeat volume the closer the professor is
-		local vol = math.clamp((40 - minDist) / 40, 0, 1) * 0.5
-		heartbeat.Volume = vol
+	if minDist < 50 then
+		local closeness = math.clamp((50 - minDist) / 50, 0, 1)
+		heartbeat.Volume = closeness * 0.5
+		-- Ramp the chase music in as the professor gets close
+		local targetVol = closeness * (MusicVolumes.Chase or 0.6)
+		chaseMusic.Volume = chaseMusic.Volume + (targetVol - chaseMusic.Volume) * 0.3
+		if targetVol > 0.05 and not chaseMusic.IsPlaying then
+			chaseMusic:Play()
+		end
 	else
 		heartbeat.Volume = 0
+		chaseMusic.Volume = math.max(0, chaseMusic.Volume - 0.05)
+		if chaseMusic.Volume <= 0.01 and chaseMusic.IsPlaying then
+			chaseMusic:Stop()
+		end
 	end
 end)
 
--- === Occasional random light flicker handled client-side for atmosphere ===
--- (Server also does a few, but client-side adds extra unpredictability with no network cost)
+-- === Occasional random light flicker (client-side, no network cost) ===
 task.spawn(function()
 	while true do
 		task.wait(math.random(6, 15))
